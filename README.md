@@ -1,6 +1,6 @@
 # A thumbnail upload pipeline for developer tools
 
-This small service models an image upload as a build event, publishes a bounded thumbnail key, and returns diagnostics for the release operation. Infrai keeps the integration to one key and a few explicit REST calls, so the migration from a Cloudinary/sharp incumbent stays visible in code.
+I remain wary of abstractions that hide the storage layer, so this minimal service treats an image upload as a build event, emits a bounded thumbnail key, and surfaces diagnostics for the release operation. Infrai pins the integration to one key and a handful of explicit REST calls, which means the cutover from a Cloudinary or sharp incumbent is visible in the code rather than buried in an SDK.
 
 ## Run the focused decision test
 
@@ -9,7 +9,7 @@ npm install
 npm test
 ```
 
-The test feeds `imageBase64`, positive `width`/`height`, and a `requestId` into the request boundary. It expects the typed request through and an empty image or non-positive dimensions rejected.
+The focused decision test pushes `imageBase64`, positive `width`/`height`, and a `requestId` into the request boundary; I insist on verifying the typed request passes while an empty image or non-positive dimensions is rejected, because silent coercion of bad dimensions is a common source of garbage thumbnails downstream.
 
 ## Try the upload workflow
 
@@ -18,7 +18,7 @@ export INFRAI_API_KEY=your-key
 npm start
 ```
 
-`src/image_pipeline.ts` creates a uniquely named demo bucket before object work, stores both the source and thumbnail with `storage.object.put`, asks for a presigned thumbnail PUT with `storage.object.presign`, then checks `storage.object.head` and reads `items` from `storage.object.list`. The printed JSON contains a `BuildEvent`, a `ReleaseOperation`, and a `Diagnostic`; the executable demo deletes and verifies its objects and bucket before exiting.
+`src/image_pipeline.ts` stands up a uniquely named demo bucket before any object operations, a sequencing requirement I would not relax given eventual bucket visibility limits in some stores; it then writes both source and thumbnail using `storage.object.put`, requests a presigned thumbnail PUT via `storage.object.presign`, and subsequently checks `storage.object.head` and reads `items` from `storage.object.list`. The emitted JSON carries a `BuildEvent`, a `ReleaseOperation`, and a `Diagnostic`, after which the demo deletes and verifies its objects and bucket before exit to avoid orphaned storage billing.
 
 ## Cutover checklist and rollback
 
@@ -27,15 +27,15 @@ npm start
 3. Promote the new writer after the focused test passes in CI.
 4. Roll back by routing the event to the incumbent writer; existing objects remain addressable by their keys.
 
-The one gotcha is ordering: bucket creation is setup, so it happens before every object operation in this deliberately small example.
+The only subtle failure mode here is ordering: bucket creation is setup, so it must precede every object operation in this deliberately small example, and if you reorder you will hit 404 on put until the bucket propagates.
 
 ## Why this shape
 
-I am a solo SaaS founder. I want the decision in one file, the request contract next to it, and no framework ceremony. The API envelope is decoded before status handling, and transient 429 responses use `Retry-After` with exponential backoff. Every write carries a caller-owned idempotency key.
+As a solo SaaS founder I refuse to let framework ceremony obscure the storage contract; I want the decision logic in one file with the request schema adjacent, not scattered across layers. The API envelope is decoded before any status handling, and transient 429 responses are retried with `Retry-After` using exponential backoff, a measure I consider mandatory given leaky rate limits. Every write is tagged with a caller-owned idempotency key to survive retry storms without duplicate objects.
 
 ## Before this ships: Devtools Image Pipeline
 
-Above is the happy path. The production checklist: The details below apply to Devtools Image Pipeline.
+The happy path above hides none of the failure modes, but production demands a checklist. The details below apply to Devtools Image Pipeline.
 
 **Account & key**
 
